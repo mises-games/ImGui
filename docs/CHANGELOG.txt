@@ -37,6 +37,13 @@ HOW TO UPDATE?
 
 Breaking Changes:
 
+- Backends: Obsoleted direct access to ImDrawCmd::TextureId in favor of calling ImDrawCmd::GetTexID(). (#3761) [@thedmd]
+  - If you are using official backends from the source tree: you have nothing to do.
+  - If you copied old backend code or using your own: change access to draw_cmd->TextureId to draw_cmd->GetTexID().
+  Why are we doing this?
+  - This change will be required in the future when adding support for incremental texture atlas updates.
+  - Please note this won't break soon, but we are making the change ahead of time.
+
 Other Changes:
 
 - Scrolling: Fix scroll tracking with e.g. SetScrollHereX/Y() when WindowPadding < ItemSpacing.
@@ -48,11 +55,14 @@ Other Changes:
 - Nav, InputText: Fixed accidental menu toggling while typing non-ascii characters using AltGR. [@rokups] (#370)
 - Nav: Fixed using SetItemDefaultFocus() on windows with _NavFlattened flag. (#787)
 - Nav: Fixed Tabbing initial activation from skipping the first item if it is tabbable through. (#787)
+- Nav: Fixed fast CTRL+Tab (where keys are only held for one single frame) from properly enabling the
+  menu layer of target window if it doesn't have other active layers.
 - Tables: Expose TableSetColumnEnabled() in public api. (#3935)
 - Tables: Better preserve widths when columns count changes. (#4046)
 - Tables: Sharing more memory buffers between tables, reducing general memory footprints. (#3740)
 - TabBar: Fixed mouse reordering with very fast movements (e.g. crossing multiple tabs in a single
   frame and then immediately standling still (would only affect automation/bots). [@rokups]
+- Menus: made MenuItem() in a menu bar reflect the 'selected' argument with a highlight. (#4128) [@mattelegende]
 - Drags, Sliders, Inputs: Specifying a NULL format to Float functions default them to "%.3f" to be
   consistent with the compile-time default. (#3922)
 - DragScalar: Add default value for v_speed argument to match higher-level functions. (#3922) [@eliasdaler]
@@ -84,6 +94,7 @@ Other Changes:
   non-default states. (#4063)
 - Backends: DirectX10, DirectX11: fixed a crash when backing/restoring state if nothing is bound when
   entering the rendering function. (#4045) [@Nemirtingas]
+- Backends: GLFW: Adding bound check in KeyCallback because GLFW appears to send -1 on some setups. [#4124]
 - Backends: Vulkan: Fix mapped memory Vulkan validation error when buffer sizes are not multiple of
   VkPhysicalDeviceLimits::nonCoherentAtomSize. (#3957) [@AgentX1994]
 - Backends: WebGPU: Update to latest specs (Chrome Canary 92 and Emscripten 2.0.20). (#4116, #3632) [@bfierz, @Kangz]
@@ -385,6 +396,7 @@ Other Changes:
 - Examples: DirectX12: Move ImGui::Render() call above the first barrier to clarify its lack of effect on the graphics pipe.
 - CI: Fix testing for Windows DLL builds. (#3603, #3601) [@iboB]
 - Docs: Improved the wiki and added a https://github.com/ocornut/imgui/wiki/Useful-Widgets page. [@Xipiryon]
+  [2021/05/20: moved to https://github.com/ocornut/imgui/wiki/Useful-Extensions]
 - Docs: Split examples/README.txt into docs/BACKENDS.md and docs/EXAMPLES.md, and improved them.
 - Docs: Consistently renamed all occurrences of "binding" and "back-end" to "backend" in comments and docs.
 
