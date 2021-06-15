@@ -2971,8 +2971,7 @@ ImGuiWindow::~ImGuiWindow()
 {
     IM_ASSERT(DrawList == &DrawListInst);
     IM_DELETE(Name);
-    for (int i = 0; i != ColumnsStorage.Size; i++)
-        ColumnsStorage[i].~ImGuiOldColumns();
+    ColumnsStorage.clear_destruct();
 }
 
 ImGuiID ImGuiWindow::GetID(const char* str, const char* str_end)
@@ -3583,8 +3582,9 @@ void ImGui::StartMouseMovingWindow(ImGuiWindow* window)
     FocusWindow(window);
     SetActiveID(window->MoveId, window);
     g.NavDisableHighlight = true;
-    g.ActiveIdNoClearOnFocusLoss = true;
     g.ActiveIdClickOffset = g.IO.MouseClickedPos[0] - window->RootWindowDockTree->Pos;
+    g.ActiveIdNoClearOnFocusLoss = true;
+    SetActiveIdUsingNavAndKeys();
 
     bool can_move_window = true;
     if ((window->Flags & ImGuiWindowFlags_NoMove) || (window->RootWindowDockTree->Flags & ImGuiWindowFlags_NoMove))
@@ -3666,8 +3666,8 @@ void ImGui::UpdateMouseMovingWindowNewFrame()
             // Clear the NoInput window flag set by the Viewport system
             moving_window->Viewport->Flags &= ~ImGuiViewportFlags_NoInputs; // FIXME-VIEWPORT: Test engine managed to crash here because Viewport was NULL.
 
-            ClearActiveID();
             g.MovingWindow = NULL;
+            ClearActiveID();
         }
     }
     else
@@ -4343,9 +4343,7 @@ void ImGui::Shutdown(ImGuiContext* context)
     CallContextHooks(&g, ImGuiContextHookType_Shutdown);
 
     // Clear everything else
-    for (int i = 0; i < g.Windows.Size; i++)
-        IM_DELETE(g.Windows[i]);
-    g.Windows.clear();
+    g.Windows.clear_delete();
     g.WindowsFocusOrder.clear();
     g.WindowsTempSortBuffer.clear();
     g.CurrentWindow = NULL;
@@ -4362,18 +4360,14 @@ void ImGui::Shutdown(ImGuiContext* context)
     g.BeginPopupStack.clear();
 
     g.CurrentViewport = g.MouseViewport = g.MouseLastHoveredViewport = NULL;
-    for (int i = 0; i < g.Viewports.Size; i++)
-        IM_DELETE(g.Viewports[i]);
-    g.Viewports.clear();
+    g.Viewports.clear_delete();
 
     g.TabBars.Clear();
     g.CurrentTabBarStack.clear();
     g.ShrinkWidthBuffer.clear();
 
     g.Tables.Clear();
-    for (int i = 0; i < g.TablesTempDataStack.Size; i++)
-        g.TablesTempDataStack[i].~ImGuiTableTempData();
-    g.TablesTempDataStack.clear();
+    g.TablesTempDataStack.clear_destruct();
     g.DrawChannelsTempMergeBuffer.clear();
 
     g.ClipboardHandlerData.clear();
@@ -5218,6 +5212,16 @@ void ImGui::SetItemUsingMouseWheel()
         g.HoveredIdUsingMouseWheel = true;
     if (g.ActiveId == id)
         g.ActiveIdUsingMouseWheel = true;
+}
+
+void ImGui::SetActiveIdUsingNavAndKeys()
+{
+    ImGuiContext& g = *GImGui;
+    IM_ASSERT(g.ActiveId != 0);
+    g.ActiveIdUsingNavDirMask = ~(ImU32)0;
+    g.ActiveIdUsingNavInputMask = ~(ImU32)0;
+    g.ActiveIdUsingKeyInputMask = ~(ImU64)0;
+    NavMoveRequestCancel();
 }
 
 ImVec2 ImGui::GetItemRectMin()
@@ -6108,13 +6112,15 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
         window_just_activated_by_user |= (window->PopupId != popup_ref.PopupId); // We recycle popups so treat window as activated if popup id changed
         window_just_activated_by_user |= (window != popup_ref.Window);
     }
-    window->Appearing = window_just_activated_by_user;
-    if (window->Appearing)
-        SetWindowConditionAllowFlags(window, ImGuiCond_Appearing, true);
 
     // Update Flags, LastFrameActive, BeginOrderXXX fields
+    const bool window_was_appearing = window->Appearing;
     if (first_begin_of_the_frame)
     {
+        window->Appearing = window_just_activated_by_user;
+        if (window->Appearing)
+            SetWindowConditionAllowFlags(window, ImGuiCond_Appearing, true);
+
         window->FlagsPreviousFrame = window->Flags;
         window->Flags = (ImGuiWindowFlags)flags;
         window->LastFrameActive = current_frame;
@@ -6147,13 +6153,17 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
 
             // Docking currently override constraints
             g.NextWindowData.Flags &= ~ImGuiNextWindowDataFlags_HasSizeConstraint;
-        }
 
-        // Update the Appearing flag (again)
-        if (window->DockTabIsVisible && !dock_tab_was_visible && dock_node_was_visible && !window->Appearing)
+            // Amend the Appearing flag
+            if (window->DockTabIsVisible && !dock_tab_was_visible && dock_node_was_visible && !window->Appearing && !window_was_appearing)
+            {
+                window->Appearing = true;
+                SetWindowConditionAllowFlags(window, ImGuiCond_Appearing, true);
+            }
+        }
+        else
         {
-            window->Appearing = true;
-            SetWindowConditionAllowFlags(window, ImGuiCond_Appearing, true);
+            window->DockIsActive = window->DockNodeIsVisible = window->DockTabIsVisible = false;
         }
     }
 
@@ -6936,6 +6946,12 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
             if (window->AutoFitFramesX <= 0 && window->AutoFitFramesY <= 0 && window->HiddenFramesCannotSkipItems <= 0)
                 skip_items = true;
         window->SkipItems = skip_items;
+
+        // Sanity check: there are two spots which can set Appearing = true
+        // - when 'window_just_activated_by_user' is set -> HiddenFramesCannotSkipItems is set -> SkipItems always false
+        // - in BeginDocked() path when DockNodeIsVisible == DockTabIsVisible == true -> hidden _should_ be all zero // FIXME: Not formally proven, hence the assert.
+        if (window->SkipItems && !window->Appearing)
+            IM_ASSERT(window->Appearing == false); // Please report on GitHub if this triggers: https://github.com/ocornut/imgui/issues/4177
     }
 
     return !window->SkipItems;
@@ -7164,6 +7180,28 @@ void ImGui::PopItemFlag()
     IM_ASSERT(g.ItemFlagsStack.Size > 1); // Too many calls to PopItemFlag() - we always leave a 0 at the bottom of the stack.
     g.ItemFlagsStack.pop_back();
     g.CurrentItemFlags = g.ItemFlagsStack.back();
+}
+
+// PushDisabled()/PopDisabled()
+// - Those are not yet exposed in imgui.h because we are unsure of how to alter the style in a way that works for everyone.
+//   We may rework this. Hypothetically, a future styling system may set a flag which make widgets use different colors.
+// - Feedback welcome at https://github.com/ocornut/imgui/issues/211
+// - You may trivially implement your own variation of this if needed.
+//   Here we test (CurrentItemFlags & ImGuiItemFlags_Disabled) to allow nested PushDisabled() calls.
+void ImGui::PushDisabled()
+{
+    ImGuiContext& g = *GImGui;
+    if ((g.CurrentItemFlags & ImGuiItemFlags_Disabled) == 0)
+        PushStyleVar(ImGuiStyleVar_Alpha, g.Style.Alpha * 0.6f);
+    PushItemFlag(ImGuiItemFlags_Disabled, true);
+}
+
+void ImGui::PopDisabled()
+{
+    ImGuiContext& g = *GImGui;
+    PopItemFlag();
+    if ((g.CurrentItemFlags & ImGuiItemFlags_Disabled) == 0)
+        PopStyleVar();
 }
 
 // FIXME: Look into renaming this once we have settled the new Focus/Activation/TabStop system.
@@ -9209,7 +9247,7 @@ ImVec2 ImGui::FindBestWindowPosForPopupEx(const ImVec2& ref_pos, const ImVec2& s
 }
 
 // Note that this is used for popups, which can overlap the non work-area of individual viewports.
-ImRect ImGui::GetWindowAllowedExtentRect(ImGuiWindow* window)
+ImRect ImGui::GetPopupAllowedExtentRect(ImGuiWindow* window)
 {
     ImGuiContext& g = *GImGui;
     ImRect r_screen;
@@ -9234,7 +9272,7 @@ ImVec2 ImGui::FindBestWindowPosForPopup(ImGuiWindow* window)
 {
     ImGuiContext& g = *GImGui;
 
-    ImRect r_outer = GetWindowAllowedExtentRect(window);
+    ImRect r_outer = GetPopupAllowedExtentRect(window);
     if (window->Flags & ImGuiWindowFlags_ChildMenu)
     {
         // Child menus typically request _any_ position within the parent menu item, and then we move the new menu outside the parent bounds.
@@ -10544,10 +10582,8 @@ bool ImGui::BeginDragDropSource(ImGuiDragDropFlags flags)
         source_parent_id = window->IDStack.back();
         source_drag_active = IsMouseDragging(mouse_button);
 
-        // Disable navigation and key inputs while dragging
-        g.ActiveIdUsingNavDirMask = ~(ImU32)0;
-        g.ActiveIdUsingNavInputMask = ~(ImU32)0;
-        g.ActiveIdUsingKeyInputMask = ~(ImU64)0;
+        // Disable navigation and key inputs while dragging + cancel existing request if any
+        SetActiveIdUsingNavAndKeys();
     }
     else
     {
@@ -14015,11 +14051,11 @@ static void ImGui::DockNodeUpdateTabBar(ImGuiDockNode* node, ImGuiWindow* host_w
             PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_Text] * ImVec4(1.0f,1.0f,1.0f,0.4f));
         }
         if (CloseButton(host_window->GetID("#CLOSE"), close_button_pos))
-            if (ImGuiTabItem* tab = TabBarFindTabByID(tab_bar, tab_bar->VisibleTabId))
-            {
-                node->WantCloseTabId = tab->ID;
-                TabBarCloseTab(tab_bar, tab);
-            }
+        {
+            node->WantCloseAll = true;
+            for (int n = 0; n < tab_bar->Tabs.Size; n++)
+                TabBarCloseTab(tab_bar, &tab_bar->Tabs[n]);
+        }
         //if (IsItemActive())
         //    focus_tab_id = tab_bar->SelectedTabId;
         if (!close_button_is_enabled)
@@ -15457,6 +15493,9 @@ void ImGui::BeginDocked(ImGuiWindow* window, bool* p_open)
     ImGuiContext* ctx = GImGui;
     ImGuiContext& g = *ctx;
 
+    // Clear fields ahead so most early-out paths don't have to do it
+    window->DockIsActive = window->DockNodeIsVisible = window->DockTabIsVisible = false;
+
     const bool auto_dock_node = GetWindowAlwaysWantOwnTabBar(window);
     if (auto_dock_node)
     {
@@ -15506,14 +15545,9 @@ void ImGui::BeginDocked(ImGuiWindow* window, bool* p_open)
         // If the window has been orphaned, transition the docknode to an implicit node processed in DockContextNewFrameUpdateDocking()
         ImGuiDockNode* root_node = DockNodeGetRootNode(node);
         if (root_node->LastFrameAlive < g.FrameCount)
-        {
             DockContextProcessUndockWindow(ctx, window);
-        }
         else
-        {
             window->DockIsActive = true;
-            window->DockNodeIsVisible = window->DockTabIsVisible = false;
-        }
         return;
     }
 
@@ -15526,8 +15560,8 @@ void ImGui::BeginDocked(ImGuiWindow* window, bool* p_open)
     // FIXME-DOCK: replace ->HostWindow NULL compare with something more explicit (~was initially intended as a first frame test)
     if (node->HostWindow == NULL)
     {
-        window->DockIsActive = (node->State == ImGuiDockNodeState_HostWindowHiddenBecauseWindowsAreResizing);
-        window->DockNodeIsVisible = window->DockTabIsVisible = false;
+        if (node->State == ImGuiDockNodeState_HostWindowHiddenBecauseWindowsAreResizing)
+            window->DockIsActive = true;
         if (node->Windows.Size > 1)
             DockNodeHideWindowDuringHostWindowCreation(window);
         return;
@@ -16239,10 +16273,10 @@ void ImGui::ShowMetricsWindow(bool* p_open)
         cfg->ShowTablesRects |= Combo("##show_table_rects_type", &cfg->ShowTablesRectsType, trt_rects_names, TRT_Count, TRT_Count);
         if (cfg->ShowTablesRects && g.NavWindow != NULL)
         {
-            for (int table_n = 0; table_n < g.Tables.GetSize(); table_n++)
+            for (int table_n = 0; table_n < g.Tables.GetMapSize(); table_n++)
             {
-                ImGuiTable* table = g.Tables.GetByIndex(table_n);
-                if (table->LastFrameActive < g.FrameCount - 1 || (table->OuterWindow != g.NavWindow && table->InnerWindow != g.NavWindow))
+                ImGuiTable* table = g.Tables.TryGetMapData(table_n);
+                if (table == NULL || table->LastFrameActive < g.FrameCount - 1 || (table->OuterWindow != g.NavWindow && table->InnerWindow != g.NavWindow))
                     continue;
 
                 BulletText("Table 0x%08X (%d columns, in '%s')", table->ID, table->ColumnsCount, table->OuterWindow->Name);
@@ -16359,23 +16393,24 @@ void ImGui::ShowMetricsWindow(bool* p_open)
     }
 
     // Details for TabBars
-    if (TreeNode("TabBars", "Tab Bars (%d)", g.TabBars.GetSize()))
+    if (TreeNode("TabBars", "Tab Bars (%d)", g.TabBars.GetAliveCount()))
     {
-        for (int n = 0; n < g.TabBars.GetSize(); n++)
-        {
-            ImGuiTabBar* tab_bar = g.TabBars.GetByIndex(n);
-            PushID(tab_bar);
-            DebugNodeTabBar(tab_bar, "TabBar");
-            PopID();
-        }
+        for (int n = 0; n < g.TabBars.GetMapSize(); n++)
+            if (ImGuiTabBar* tab_bar = g.TabBars.TryGetMapData(n))
+            {
+                PushID(tab_bar);
+                DebugNodeTabBar(tab_bar, "TabBar");
+                PopID();
+            }
         TreePop();
     }
 
     // Details for Tables
-    if (TreeNode("Tables", "Tables (%d)", g.Tables.GetSize()))
+    if (TreeNode("Tables", "Tables (%d)", g.Tables.GetAliveCount()))
     {
-        for (int n = 0; n < g.Tables.GetSize(); n++)
-            DebugNodeTable(g.Tables.GetByIndex(n));
+        for (int n = 0; n < g.Tables.GetMapSize(); n++)
+            if (ImGuiTable* table = g.Tables.TryGetMapData(n))
+                DebugNodeTable(table);
         TreePop();
     }
 
@@ -16498,6 +16533,7 @@ void ImGui::ShowMetricsWindow(bool* p_open)
         Indent();
         Text("ActiveId: 0x%08X/0x%08X (%.2f sec), AllowOverlap: %d, Source: %s", g.ActiveId, g.ActiveIdPreviousFrame, g.ActiveIdTimer, g.ActiveIdAllowOverlap, input_source_names[g.ActiveIdSource]);
         Text("ActiveIdWindow: '%s'", g.ActiveIdWindow ? g.ActiveIdWindow->Name : "NULL");
+        Text("ActiveIdUsing: Wheel: %d, NavDirMask: %X, NavInputMask: %X, KeyInputMask: %llX", g.ActiveIdUsingMouseWheel, g.ActiveIdUsingNavDirMask, g.ActiveIdUsingNavInputMask, g.ActiveIdUsingKeyInputMask);
         Text("HoveredId: 0x%08X/0x%08X (%.2f sec), AllowOverlap: %d", g.HoveredId, g.HoveredIdPreviousFrame, g.HoveredIdTimer, g.HoveredIdAllowOverlap); // Data is "in-flight" so depending on when the Metrics window is called we may see current frame information or not
         Text("DragDrop: %d, SourceId = 0x%08X, Payload \"%s\" (%d bytes)", g.DragDropActive, g.DragDropPayload.SourceId, g.DragDropPayload.DataType, g.DragDropPayload.DataSize);
         Unindent();
@@ -16545,10 +16581,10 @@ void ImGui::ShowMetricsWindow(bool* p_open)
     // Overlay: Display Tables Rectangles
     if (cfg->ShowTablesRects)
     {
-        for (int table_n = 0; table_n < g.Tables.GetSize(); table_n++)
+        for (int table_n = 0; table_n < g.Tables.GetMapSize(); table_n++)
         {
-            ImGuiTable* table = g.Tables.GetByIndex(table_n);
-            if (table->LastFrameActive < g.FrameCount - 1)
+            ImGuiTable* table = g.Tables.TryGetMapData(table_n);
+            if (table == NULL || table->LastFrameActive < g.FrameCount - 1)
                 continue;
             ImDrawList* draw_list = GetForegroundDrawList(table->OuterWindow);
             if (cfg->ShowTablesRectsType >= TRT_ColumnsRect)
